@@ -32,9 +32,9 @@ contract Router is Context, IRouter, RouterAccessControl {
     mapping(address => bool) public supportedTokens;
 
     event FeeRateUpdated(uint256 newFeeRate);
-    event FeeCollectorUpdated(address newFeeCollector);
     event TokenSupported(address token);
     event TokenUnsupported(address token);
+    event Swap(address indexed sender, address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOut);
 
     /// @notice Initializes the router contract
     /// @param admin Address of the admin
@@ -204,8 +204,9 @@ contract Router is Context, IRouter, RouterAccessControl {
         if (params.path.length < 2) revert Errors.InvalidPath();
         if (params.v2AmountRatio + params.v3AmountRatio != RATIO_DENOMINATOR)
             revert Errors.InvalidRatio();
-        if (!supportedTokens[params.path[0]] && !supportedTokens[params.path[params.path.length - 1]]) 
+        if (!supportedTokens[params.path[0]] && !supportedTokens[params.path[params.path.length - 1]])
             revert Errors.InvalidInputToken();
+        if (routerFeeRate >= FEE_DENOMINATOR) revert Errors.FeeRateTooHigh();
 
         address inputToken = params.path[0];
         address outputToken = params.path[params.path.length - 1];
@@ -272,25 +273,19 @@ contract Router is Context, IRouter, RouterAccessControl {
         // Handle fee collection and token transfer
         if (isInputSupported && !isOutputSupported) {
             // Collect fee from input amount
-            feeAmount = totalAmountIn * routerFeeRate / FEE_DENOMINATOR;
+            feeAmount = totalAmountIn * routerFeeRate / (FEE_DENOMINATOR - routerFeeRate);
             if (actualMaxAmountIn < totalAmountIn + feeAmount) revert Errors.InsufficientInputAmount();
 
             uint256 remainingInput = actualMaxAmountIn - totalAmountIn - feeAmount;
             
             // Return unused tokens to user
-            if (remainingInput > 0) {
-                if (msg.value > 0) {
-                    IWrappedToken(WRAPPED_TOKEN).withdraw(remainingInput);
-                    _transferNativeToken(params.to, remainingInput);
-                } else {
-                    IERC20(inputToken).safeTransfer(params.to, remainingInput);
-                }
-            }
+            _refundInputToken(inputToken, params.to, remainingInput);
         }
 
         if (isOutputSupported) {
-            // Transfer input amount to user
-            IERC20(inputToken).safeTransfer(params.to, actualMaxAmountIn - totalAmountIn);
+            // Refund unused input, favoring native ETH when msg.value supplied
+            uint256 refundAmount = actualMaxAmountIn - totalAmountIn;
+            _refundInputToken(inputToken, params.to, refundAmount);
             // Transfer output amount minus fee to user
             uint256 remainingAmount = targetAmountOut - feeAmount;
             // Check if output token is WETH and automatically convert to ETH
@@ -303,6 +298,24 @@ contract Router is Context, IRouter, RouterAccessControl {
         }
 
         return (v2AmountIn, v3AmountIn);
+    }
+
+    function _refundInputToken(address inputToken, address recipient, uint256 amount) internal {
+        if (amount == 0) return;
+        if (msg.value > 0) {
+            IWrappedToken(WRAPPED_TOKEN).withdraw(amount);
+            _transferNativeToken(recipient, amount);
+        } else {
+            IERC20(inputToken).safeTransfer(recipient, amount);
+        }
+    }
+
+    /// @notice Clear token allowance for a specific spender
+    /// @dev Used to eliminate residual allowance after external DEX interactions
+    /// @param token Token address to clear allowance for
+    /// @param spender Spender address (router) to clear allowance from
+    function _clearApproval(address token, address spender) internal {
+        IERC20(token).forceApprove(spender, 0);
     }
 
     /// @notice Executes swap on Uniswap V2 with exact input
@@ -328,6 +341,7 @@ contract Router is Context, IRouter, RouterAccessControl {
             to,
             deadline
         );
+        _clearApproval(path[0], v2Router);
         return amounts[amounts.length - 1];
     }
 
@@ -359,7 +373,9 @@ contract Router is Context, IRouter, RouterAccessControl {
                 amountOutMinimum: amountOutMinimum
             });
 
-        return swapRouter.exactInput(params);
+        uint256 amountOut = swapRouter.exactInput(params);
+        _clearApproval(path[0], address(swapRouter));
+        return amountOut;
     }
 
     /// @notice Executes swap on Uniswap V2 with exact output
@@ -385,6 +401,7 @@ contract Router is Context, IRouter, RouterAccessControl {
             to,
             deadline
         );
+        _clearApproval(path[0], v2Router);
         return amounts[0];
     }
 
@@ -418,7 +435,9 @@ contract Router is Context, IRouter, RouterAccessControl {
                 amountOut: amountOut,
                 amountInMaximum: amountInMaximum
             });
-        return swapRouter.exactOutput(params);
+        uint256 amountIn = swapRouter.exactOutput(params);
+        _clearApproval(path[0], address(swapRouter));
+        return amountIn;
     }
 
     /// @notice Calculates fee amount based on input amount and fee rate
@@ -513,6 +532,10 @@ contract Router is Context, IRouter, RouterAccessControl {
             isInputNative
         );
 
+        if (!isInputNative) {
+            _clearApproval(params.inputToken, oneInchRouter);
+        }
+
         // Enforce that no output was sent directly to the user during the external call
         uint256 userOutputBalanceAfter = isOutputNative
             ? _msgSender().balance
@@ -551,7 +574,20 @@ contract Router is Context, IRouter, RouterAccessControl {
             _refundSurplusErc20Token(params.inputToken, params.amountIn, inputTokenBalanceBefore, expectedRetention);
         }
 
+        emit Swap(
+            _msgSender(), 
+            _normalizeTokenForEvent(params.inputToken), 
+            _normalizeTokenForEvent(params.outputToken), 
+            amountToSwap, 
+            returnAmount
+        );
+
         return returnAmount;
+    }
+
+    /// @dev Normalizes token address for event emission. Converts NATIVE_PLACEHOLDER to WRAPPED_TOKEN.
+    function _normalizeTokenForEvent(address token) internal view returns (address) {
+        return token == NATIVE_PLACEHOLDER ? WRAPPED_TOKEN : token;
     }
 
     /// @dev Internal function to check tokens and handle input for a 1inch swap.

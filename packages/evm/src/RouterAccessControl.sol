@@ -16,13 +16,6 @@ contract RouterAccessControl is IRouterAccessControl, AccessControlEnumerable {
         _grantRole(ADMIN, admin);
     }
 
-    modifier validRole(bytes32 role) {
-        if (role != ADMIN ) {
-            revert InvalidRole(role);
-        }
-        _;
-    }
-
     modifier onlyAdmin() {
         if (!hasRole(ADMIN, msg.sender)) {
             revert OnlyAdmin();

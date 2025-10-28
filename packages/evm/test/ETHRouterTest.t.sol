@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
 import "../src/Router.sol";
+import "../src/libraries/Errors.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
@@ -76,6 +77,7 @@ contract ETHRouterTest is Test {
         
         uint256 balanceUsdcBefore = IERC20(usdc).balanceOf(address(trader.addr));
 
+        vm.txGasPrice(0);
         vm.startBroadcast(trader.key);
         IRouter.SwapExactInParams memory params = IRouter.SwapExactInParams({
             path: path,
@@ -895,8 +897,8 @@ contract ETHRouterTest is Test {
         // 2. Router should not collect fee from output amount (UNI)
         // 3. Trader should receive exact output amount (UNI)
 
-        // Verify router collected WETH as fee
-        uint256 expectedWethFee = v3AmountIn * initialFeeRate / 10000;
+        // Verify router collected WETH as fee (PVE-001 fix: updated formula)
+        uint256 expectedWethFee = v3AmountIn * initialFeeRate / (10000 - initialFeeRate);
         assertEq(
             IERC20(weth).balanceOf(address(router)) - routerWethBalanceBefore,
             expectedWethFee,
@@ -1094,8 +1096,8 @@ contract ETHRouterTest is Test {
             "Router should not collect UNI as fee"
         );
 
-        // Verify router collected UNI as fee
-        uint256 expectedUsdcFee = v3AmountIn * initialFeeRate / 10000;
+        // Verify router collected USDC as fee (PVE-001 fix: updated formula)
+        uint256 expectedUsdcFee = v3AmountIn * initialFeeRate / (10000 - initialFeeRate);
         assertEq(
             IERC20(usdc).balanceOf(address(router)) - routerUsdcBalanceBefore,
             expectedUsdcFee,
@@ -1182,12 +1184,12 @@ contract ETHRouterTest is Test {
 
         uint24[] memory fees = new uint24[](1);
         fees[0] = 500; // 0.05% fee tier for USDC/WETH pool
-        
+
         vm.startBroadcast(trader.key);
-        
+
         uint256 wethAmountMax = 2 ether; // max 2 WETH
         uint256 usdcAmountOut = 1000 * 10**6; // want 1000 USDC
-        
+
         IRouter.SwapExactOutParams memory params = IRouter.SwapExactOutParams({
             path: path,
             v3Fees: fees,
@@ -1201,19 +1203,25 @@ contract ETHRouterTest is Test {
         });
 
         // Record initial balances
+        uint256 traderEthBefore = trader.addr.balance;
         uint256 balanceUsdcBefore = IERC20(usdc).balanceOf(address(trader.addr));
+        uint256 traderWethBefore = IERC20(weth).balanceOf(address(trader.addr));
         uint256 routerWethBalanceBefore = IERC20(weth).balanceOf(address(router));
-        
+
         // Execute swap
-        router.swapExactOut{value: wethAmountMax}(params, 0);
+        (uint256 v2AmountIn, uint256 v3AmountIn) = router.swapExactOut{value: wethAmountMax}(params, 0);
         vm.stopBroadcast();
 
         // Since WETH is supported token (input), verify:
-        // 1. Router should collect fee from input amount (WETH)
-        // 2. Router should not collect fee from output amount (USDC)
+        // 1. Router should not collect fee from input amount (WETH)
+        // 2. Router should collect fee from output amount (USDC)
         // 3. Trader should receive exact output amount (USDC)
+        // 4. PVE-3: Unused input ETH should be refunded as native ETH, not WETH
 
-        // Verify router collected WETH as fee
+        uint256 totalAmountInUsed = v2AmountIn + v3AmountIn;
+        uint256 expectedRefund = wethAmountMax - totalAmountInUsed;
+
+        // Verify router didn't collect WETH as fee
         assertEq(
             IERC20(weth).balanceOf(address(router)) - routerWethBalanceBefore,
             0,
@@ -1232,5 +1240,206 @@ contract ETHRouterTest is Test {
             usdcAmountOut,
             "Trader should receive exact USDC amount"
         );
+
+        // PVE-3 Verification: Ensure unused ETH is refunded as native ETH, not WETH
+        // Trader should not have received any WETH tokens
+        assertEq(
+            IERC20(weth).balanceOf(trader.addr),
+            traderWethBefore,
+            "PVE-3: Trader should not receive WETH tokens as refund"
+        );
+
+        // Trader's ETH balance should match actual WETH spent and reflect native refund
+        assertEq(
+            trader.addr.balance,
+            traderEthBefore - totalAmountInUsed,
+            "PVE-3: Trader ETH balance should equal initial balance minus actual input used"
+        );
+        assertEq(
+            trader.addr.balance,
+            traderEthBefore - wethAmountMax + expectedRefund,
+            "PVE-3: Trader ETH balance should include native refund"
+        );
+        assertGe(expectedRefund, 0, "PVE-3: Expected refund cannot be negative");
     }
-} 
+
+    function testSwapExactOutETHRefundAsNativeToken() public {
+        address[] memory path = new address[](2);
+        path[0] = weth;
+        path[1] = usdc;
+
+        uint24[] memory fees = new uint24[](1);
+        fees[0] = 500; // 0.05% fee tier for USDC/WETH pool
+
+        vm.txGasPrice(0);
+        vm.startBroadcast(trader.key);
+
+        uint256 wethAmountMax = 2 ether; // intentionally larger max input
+        uint256 usdcAmountOut = 500 * 10**6; // require less than max input
+
+        IRouter.SwapExactOutParams memory params = IRouter.SwapExactOutParams({
+            path: path,
+            v3Fees: fees,
+            v2AmountInMax: 0,
+            v3AmountInMax: wethAmountMax,
+            v2AmountRatio: 0,
+            v3AmountRatio: 10000,
+            amountOut: usdcAmountOut,
+            to: trader.addr,
+            deadline: vm.getBlockTimestamp() + 10
+        });
+
+        uint256 traderEthBefore = trader.addr.balance;
+        uint256 traderWethBefore = IERC20(weth).balanceOf(trader.addr);
+
+        (uint256 v2AmountIn, uint256 v3AmountIn) = router.swapExactOut{value: wethAmountMax}(params, 0);
+        vm.stopBroadcast();
+
+        uint256 totalAmountInUsed = v2AmountIn + v3AmountIn;
+        uint256 expectedRefund = wethAmountMax - totalAmountInUsed;
+
+        assertGt(expectedRefund, 0, "PVE-3: Expected refund should be positive");
+        assertEq(
+            trader.addr.balance,
+            traderEthBefore - totalAmountInUsed,
+            "PVE-3: Trader ETH balance should reflect refund"
+        );
+        assertEq(
+            trader.addr.balance,
+            traderEthBefore - wethAmountMax + expectedRefund,
+            "PVE-3: Refund must be returned as native ETH"
+        );
+        assertEq(
+            IERC20(weth).balanceOf(trader.addr),
+            traderWethBefore,
+            "PVE-3: Trader must not receive WETH tokens as refund"
+        );
+    }
+
+    // PVE-001 Edge Case Tests
+    function testSwapExactOutInputFeeWithDefaultRate() public {
+        // Test with routerFeeRate=0 parameter (uses default feeRate)
+        address[] memory path = new address[](2);
+        path[0] = usdc;
+        path[1] = uni;
+
+        uint24[] memory fees = new uint24[](1);
+        fees[0] = 3000;
+
+        vm.startBroadcast(trader.key);
+        deal(usdc, trader.addr, 10000 * 10**6);
+        IERC20(usdc).approve(address(router), type(uint256).max);
+
+        uint256 usdcAmountMax = 2000 * 10**6;
+        uint256 uniAmountOut = 1 * 10**18;
+
+        IRouter.SwapExactOutParams memory params = IRouter.SwapExactOutParams({
+            path: path,
+            v3Fees: fees,
+            v2AmountInMax: 0,
+            v3AmountInMax: usdcAmountMax,
+            v2AmountRatio: 0,
+            v3AmountRatio: 10000,
+            amountOut: uniAmountOut,
+            to: trader.addr,
+            deadline: vm.getBlockTimestamp() + 10
+        });
+
+        uint256 routerUsdcBalanceBefore = IERC20(usdc).balanceOf(address(router));
+
+        // Swap with 0 parameter (uses default feeRate = initialFeeRate)
+        (, uint256 v3AmountIn) = router.swapExactOut(params, 0);
+        vm.stopBroadcast();
+
+        // Verify fee was collected using default rate with corrected formula
+        uint256 expectedFee = v3AmountIn * initialFeeRate / (10000 - initialFeeRate);
+        assertEq(
+            IERC20(usdc).balanceOf(address(router)) - routerUsdcBalanceBefore,
+            expectedFee,
+            "Router should collect fee using default rate"
+        );
+    }
+
+    function testSwapExactOutInputFeeWithHighRate() public {
+        // Test with high fee rate (1% = 100 basis points)
+        address[] memory path = new address[](2);
+        path[0] = usdc;
+        path[1] = uni;
+
+        uint24[] memory fees = new uint24[](1);
+        fees[0] = 3000;
+
+        vm.startBroadcast(trader.key);
+        deal(usdc, trader.addr, 10000 * 10**6);
+        IERC20(usdc).approve(address(router), type(uint256).max);
+
+        uint256 usdcAmountMax = 2000 * 10**6;
+        uint256 uniAmountOut = 1 * 10**18;
+
+        IRouter.SwapExactOutParams memory params = IRouter.SwapExactOutParams({
+            path: path,
+            v3Fees: fees,
+            v2AmountInMax: 0,
+            v3AmountInMax: usdcAmountMax,
+            v2AmountRatio: 0,
+            v3AmountRatio: 10000,
+            amountOut: uniAmountOut,
+            to: trader.addr,
+            deadline: vm.getBlockTimestamp() + 10
+        });
+
+        uint256 routerUsdcBalanceBefore = IERC20(usdc).balanceOf(address(router));
+
+        // Swap with 1% fee rate (100 basis points)
+        uint256 highFeeRate = 100;
+        (, uint256 v3AmountIn) = router.swapExactOut(params, highFeeRate);
+        vm.stopBroadcast();
+
+        // Verify fee matches the corrected formula
+        uint256 expectedFee = v3AmountIn * highFeeRate / (10000 - highFeeRate);
+        assertEq(
+            IERC20(usdc).balanceOf(address(router)) - routerUsdcBalanceBefore,
+            expectedFee,
+            "Router should collect correct fee with high rate"
+        );
+    }
+
+    function testSwapExactOutInputFeeRateTooHigh() public {
+        // Test that fee rate >= FEE_DENOMINATOR reverts
+        address[] memory path = new address[](2);
+        path[0] = usdc;
+        path[1] = uni;
+
+        uint24[] memory fees = new uint24[](1);
+        fees[0] = 3000;
+
+        vm.startBroadcast(trader.key);
+        deal(usdc, trader.addr, 10000 * 10**6);
+        IERC20(usdc).approve(address(router), type(uint256).max);
+
+        uint256 usdcAmountMax = 2000 * 10**6;
+        uint256 uniAmountOut = 1 * 10**18;
+
+        IRouter.SwapExactOutParams memory params = IRouter.SwapExactOutParams({
+            path: path,
+            v3Fees: fees,
+            v2AmountInMax: 0,
+            v3AmountInMax: usdcAmountMax,
+            v2AmountRatio: 0,
+            v3AmountRatio: 10000,
+            amountOut: uniAmountOut,
+            to: trader.addr,
+            deadline: vm.getBlockTimestamp() + 10
+        });
+
+        // Should revert with FeeRateTooHigh when fee rate equals FEE_DENOMINATOR
+        vm.expectRevert(Errors.FeeRateTooHigh.selector);
+        router.swapExactOut(params, 10000);
+
+        // Should revert with FeeRateTooHigh when fee rate exceeds FEE_DENOMINATOR
+        vm.expectRevert(Errors.FeeRateTooHigh.selector);
+        router.swapExactOut(params, 10001);
+
+        vm.stopBroadcast();
+    }
+}

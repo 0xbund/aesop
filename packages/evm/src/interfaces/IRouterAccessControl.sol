@@ -5,8 +5,6 @@ import "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 import "@openzeppelin/contracts/access/IAccessControl.sol";
 
 interface IRouterAccessControl is IAccessControlEnumerable {
-
-    error InvalidRole(bytes32 role);
     error OnlyAdmin();
     error NoAdminTransferInProgress();
     error InvalidAddress();

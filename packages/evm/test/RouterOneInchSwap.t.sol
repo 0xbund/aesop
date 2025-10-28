@@ -27,6 +27,9 @@ contract RouterSwapNativeToERC20Test is Test {
     // 1inch swap selector
     bytes4 private constant SWAP_SELECTOR = 0x7c025200;
 
+    // Mirror Router's event for expectEmit
+    event Swap(address indexed sender, address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOut);
+
     function setUp() public {
         admin = makeAddr("admin");
         user = makeAddr("user");
@@ -84,6 +87,10 @@ contract RouterSwapNativeToERC20Test is Test {
             address(dai),
             amountFor1inch
         );
+
+        // Expect Router to emit Swap with net amounts
+        vm.expectEmit(address(router));
+        emit Swap(user, address(weth), address(dai), amountFor1inch, expectedOutput);
 
         vm.startPrank(user);
         uint256 returnAmount = router.swapOn1inch{value: amountIn}(
@@ -150,6 +157,10 @@ contract RouterSwapNativeToERC20Test is Test {
         uint256 routerWethBefore = weth.balanceOf(address(router));
         uint256 routerDaiBefore = dai.balanceOf(address(router));
 
+        // Expect Router to emit Swap with net amounts
+        vm.expectEmit(address(router));
+        emit Swap(user, address(weth), address(dai), amountFor1inch, expectedOutput);
+
         uint256 returnAmount = router.swapOn1inch(
             IRouter.OneInchSwapParams({
                 oneInchCallData: callData,
@@ -184,6 +195,8 @@ contract RouterSwapNativeToERC20Test is Test {
         // Router 應保留 WETH 手續費
         assertEq(weth.balanceOf(address(router)), routerWethBefore + expectedFee, "router WETH fee");
         assertEq(dai.balanceOf(address(router)), routerDaiBefore, "router DAI residual");
+        // PVE-2: Verify allowance is cleared after swap
+        assertEq(weth.allowance(address(router), address(mock1inch)), 0, "router allowance to 1inch should be 0");
     }
 
     // erc20 -> weth
@@ -211,6 +224,10 @@ contract RouterSwapNativeToERC20Test is Test {
         uint256 userWethBefore = weth.balanceOf(user);
         uint256 routerDaiBefore = dai.balanceOf(address(router));
         uint256 routerWethBefore = weth.balanceOf(address(router));
+
+        // Expect Router to emit Swap with net amounts
+        vm.expectEmit(address(router));
+        emit Swap(user, address(dai), address(weth), amountIn, expectedOutputToUser);
 
         uint256 returnAmount = router.swapOn1inch(
             IRouter.OneInchSwapParams({
@@ -246,6 +263,8 @@ contract RouterSwapNativeToERC20Test is Test {
         // Router 應保留 WETH 手續費
         assertEq(weth.balanceOf(address(router)), routerWethBefore + expectedFee, "router WETH fee");
         assertEq(dai.balanceOf(address(router)), routerDaiBefore, "router DAI residual");
+        // PVE-2: Verify allowance is cleared after swap
+        assertEq(dai.allowance(address(router), address(mock1inch)), 0, "router allowance to 1inch should be 0");
     }
 
     // erc20 -> native
@@ -273,6 +292,10 @@ contract RouterSwapNativeToERC20Test is Test {
         uint256 userDaiBefore = dai.balanceOf(user);
         uint256 routerEthBefore = address(router).balance;
         uint256 routerDaiBefore = dai.balanceOf(address(router));
+
+        // Expect Router to emit Swap with net amounts
+        vm.expectEmit(address(router));
+        emit Swap(user, address(dai), address(weth), amountIn, expectedOutputToUser);
 
         uint256 returnAmount = router.swapOn1inch(
             IRouter.OneInchSwapParams({
@@ -308,6 +331,8 @@ contract RouterSwapNativeToERC20Test is Test {
         // Router 應保留 ETH 手續費
         assertEq(address(router).balance, routerEthBefore + expectedFee, "router ETH fee");
         assertEq(dai.balanceOf(address(router)), routerDaiBefore, "router DAI residual");
+        // PVE-2: Verify allowance is cleared after swap
+        assertEq(dai.allowance(address(router), address(mock1inch)), 0, "router allowance to 1inch should be 0");
     }
 
     // refund surplus: ERC20 input not fully spent by 1inch (router refunds leftover to user)
@@ -338,6 +363,10 @@ contract RouterSwapNativeToERC20Test is Test {
         uint256 expectedFeeOnOutput = rawOutput.mulDiv(FEE_RATE, FEE_DENOMINATOR);
         uint256 minOutput = rawOutput - expectedFeeOnOutput;
 
+        // Expect Router to emit Swap with net amounts (amountIn equals amountToSwap = amountIn)
+        vm.expectEmit(address(router));
+        emit Swap(user, address(dai), address(weth), amountIn, minOutput);
+
         uint256 returnAmount = router.swapOn1inch(
             IRouter.OneInchSwapParams({
                 oneInchCallData: callData,
@@ -367,6 +396,9 @@ contract RouterSwapNativeToERC20Test is Test {
 
         // Return amount equals minOutput (net to user)
         assertEq(returnAmount, minOutput, "returnAmount matches net output");
+        
+        // PVE-2: Verify allowance is cleared after swap
+        assertEq(dai.allowance(address(router), address(mock1inch)), 0, "router allowance to 1inch should be 0");
     }
 
     // refund surplus: Native input extra ETH returned from aggregator should be forwarded back to user
@@ -391,6 +423,10 @@ contract RouterSwapNativeToERC20Test is Test {
         uint256 userEthBefore = user.balance;
         uint256 routerEthBefore = address(router).balance;
         uint256 mockEthBefore = address(mock1inch).balance;
+
+        // Expect Router to emit Swap with net amounts
+        vm.expectEmit(address(router));
+        emit Swap(user, address(weth), address(dai), to1inch, expectedOutput);
 
         vm.startPrank(user);
         uint256 returnAmount = router.swapOn1inch{value: amountIn}(

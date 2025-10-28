@@ -2,8 +2,6 @@ ARBI_RPC := ""
 ETH_RPC := ""
 SEPOLIA_RPC := ""
 BSC_RPC := ""
-test_arbi:
-	forge test -vv --gas-report --fork-url ${ARBI_RPC} --fork-block-number 264602864 --match-path test/ArbiRouterTest.t.sol
 
 test_eth:
 	forge test -vv --gas-report --fork-url ${ETH_RPC} --fork-block-number 21000000 --match-path test/ETHRouterTest.t.sol
@@ -17,7 +15,7 @@ test_bsc:
 test_accesscontrol:
 	forge test -vv --match-contract RouterAccessControlTest
 
-test_all: test_arbi test_eth test_bsc
+test_all: test_eth test_accesscontrol test_eth_oneinch test_bsc
 
 build:
 	-rm -rf out
