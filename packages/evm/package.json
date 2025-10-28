@@ -1,0 +1,14 @@
+{
+  "name": "evm",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "make build",
+    "test:arbi": "make test_arbi",
+    "test:eth": "make test_eth",
+    "test:all": "make test_all",
+    "test:accesscontrol": "make test_accesscontrol",
+    "deploy:router": "make deploy_router",
+    "initiate:admin": "make initiate_admin_transfer"
+  }
+} 

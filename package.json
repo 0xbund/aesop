@@ -1,0 +1,25 @@
+{
+  "name": "aesop",
+  "version": "1.0.0",
+  "private": true,
+  "repository": "git@gitlab-defi.timeresearch.biz:pizza/aesop.git",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "evm:build": "yarn workspace evm build",
+    "evm:test:arbi": "yarn workspace evm test:arbi",
+    "evm:test:eth": "yarn workspace evm test:eth",
+    "evm:test:all": "yarn workspace evm test:all",
+    "evm:test:accesscontrol": "yarn workspace evm test:accesscontrol",
+    "evm:deploy:router": "yarn workspace evm deploy:router",
+    "evm:initiate:admin": "yarn workspace evm initiate:admin",
+    "build": "yarn workspaces foreach run build",
+    "test": "yarn workspaces foreach run test",
+    "tron:compile": "yarn workspace tron-deploy compile",
+    "tron:deploy:nile": "yarn workspace tron-deploy deploy:nile",
+    "tron:deploy:mainnet": "yarn workspace tron-deploy deploy:mainnet",
+    "tron:info": "yarn workspace tron-deploy info"
+  }
+}

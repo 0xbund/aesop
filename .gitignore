@@ -1,0 +1,55 @@
+# Compiler files
+cache/
+out/
+artifacts/
+coverage/
+coverage.json
+
+# Ignores development broadcast logs
+broadcast/
+
+# Docs
+docs/
+
+# Dotenv file
+.env
+.env.local
+.env.*
+
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Debug logs
+*.log
+logs/
+
+# Build output
+dist/
+build/
+
+# Testing
+coverage/
+.coverage_artifacts/
+.coverage_cache/
+.coverage_contracts/
+
+# Hardhat files
+typechain-types/
+.openzeppelin/
+
+# Local deployments
+deployments/localhost/
+
+# Misc
+.DS_Store
+*.pem
+
+.github/
